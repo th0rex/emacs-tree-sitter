@@ -250,22 +250,53 @@ scrolling (slows down scrolling noticeably with buffers with more than 2000 line
   "Highlight the buffer from START to END with tree-sitter.
 
 This will remove all face properties in that region."
-  ;; TODO: Remember what we've highlighted, similar to how font-lock does it.
-  ;;       Already highlighted regions shouldn't be re-highlighted.
   (ts--save-context
     (with-silent-modifications
-      (remove-text-properties start end '(face nil))
-      (let ((matches (tree-sitter-highlight--get-matches start end)))
+      ;; TODO: Move this all to rust :^)
+      (let* ((node (ts-get-descendant-for-position-range (ts-root-node tree-sitter-tree) start end))
+             (start (ts-node-start-position node))
+             (end (ts-node-end-position node))
+              ;; TODO: According to the docs this doesn't work while scrolling.
+             (wstart (window-start))
+             (wend (window-end))
+             (matches (tree-sitter-highlight--get-matches start end))
+             (x (seq-reduce #'(lambda (acc match)
+                                (seq-reduce #'(lambda (acc x)
+                                                (let* ((node (cdr x))
+                                                       (start (ts-node-start-position node))
+                                                       (end (ts-node-end-position node))
+                                                       (lowest-start (car acc))
+                                                       (highest-end (cdr acc)))
+                                                  (if (or (and (>= start wstart)
+                                                               (<= start wend))
+                                                          (and (>= end wstart)
+                                                               (<= end wend)))
+                                                    `(,(min start lowest-start) . ,(max end highest-end))
+                                                    acc)))
+                                  (cdr match) acc))
+                  matches `(,wstart . ,wend)))
+             (real-start (car x))
+             (real-end (cdr x)))
+        (message "[%s .. %s], requested [%s .. %s], window [%s .. %s]" real-start real-end start end wstart wend)
         (seq-do #'(lambda (match)
-                    (seq-do #'tree-sitter-highlight--apply (cdr match)))
+                    (seq-do #'(lambda (x)
+                                (let* ((node (cdr x))
+                                       (start (ts-node-start-position node))
+                                        (end (ts-node-end-position node)))
+                                  (when (and (>= start real-start)
+                                             (<= end real-end))
+                                    ;; (message "HL [%s .. %s] (%s)" start end (car x))
+                                    (tree-sitter-highlight--apply x))))
+                      (cdr match)))
           matches)))))
 
 (defun tree-sitter-highlight--jit (old-tree)
   "Highlight the buffer just-in-time, i.e. after the buffer was parsed with tree-sitter."
   (when old-tree
-    (let ((changes (ts-changed-ranges old-tree tree-sitter-tree))
-           (wstart (window-start))
-           (wend   (window-end)))
+    (let ((changes (ts-changed-ranges old-tree tree-sitter-tree)))
+      (mapc #'(lambda (range)
+                (tree-sitter-highlight--highlight (aref range 0) (aref range 1)))
+        changes))))
 
       ;; The old version:
       ;;
@@ -281,20 +312,22 @@ This will remove all face properties in that region."
       ;; Should at least never *miss* something, but certainly does "too much" (unneeded) work.
       ;; Checks if the start or the end of any changed range lies within window-start and window-end.
       ;; If any does, then highlight the whole visible region.
-      (when (seq-reduce #'(lambda (acc range)
-                            (let ((start (aref range 0))
-                                  (end   (aref range 1)))
-                              (or ;; Any previous range was visible
-                                  acc
-                                  ;; ... or the start is visible
-                                  (and (>= start wstart)
-                                    (<= start wend))
-                                  ;; ... or the end is visible
-                                  (and (>= end wstart)
-                                    (<= end wend)))))
-              changes nil)
-        ;; Highlight the whole visible region.
-        (tree-sitter-highlight--highlight wstart wend)))))
+      ;; (let ((x (seq-reduce #'(lambda (acc range)
+      ;;                          (let ((start (aref range 0))
+      ;;                                (end   (aref range 1))
+      ;;                                (lowest-start (car acc))
+      ;;                                (highest-end (cdr acc)))
+      ;;                            (if (or (and (>= start wstart)
+      ;;                                         (<= end wend))
+      ;;                                    (and (>= end wstart)
+      ;;                                         (<= end wend)))
+      ;;                              `(,(min start lowest-start) . ,(max end highest-end))
+      ;;                              acc)))
+      ;;            changes `(,wstart . ,wend))))
+      ;;   (message "Highlighting %s .. %s" (car x) (cdr x))
+      ;;   ;; Highlight the whole visible region and whatever more we need to
+      ;;   ;; to correct highlighting.
+      ;;   (tree-sitter-highlight--highlight (car x) (cdr x))))))
 
 (defun tree-sitter-highlight--highlight-window (_window start)
   "Highlight the _WINDOW after scrolling took place.
