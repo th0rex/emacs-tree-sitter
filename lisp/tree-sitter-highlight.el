@@ -211,14 +211,14 @@ scrolling (slows down scrolling noticeably with buffers with more than 2000 line
           (injections-query (ts--make-query lang (or injections ""))))
     `(,query ,injections-query)))
 
-(defun tree-sitter-highlight--apply (x)
+(defun tree-sitter-highlight--apply (x wstart wend)
   "Apply the face for the match X in the buffer."
   (let* ((node  (cdr x))
           (name (car x))
           (face (or (gethash name tree-sitter-highlight--face-hash)
                     (gethash (car (split-string name "\\.")) tree-sitter-highlight--face-hash)))
-          (start (ts-node-start-position node))
-          (end   (ts-node-end-position node)))
+          (start (max wstart (ts-node-start-position node)))
+          (end   (min wend (ts-node-end-position node))))
     ;; Make sure to not override other faces that have already been placed here.
     ;; I'm not sure if the expected behaviour is to override or not to override
     ;; (i.e. what should take precedence in tree-sitter, the first or the last match?)
@@ -246,7 +246,7 @@ scrolling (slows down scrolling noticeably with buffers with more than 2000 line
     #'ts-node-text)
   )
 
-(defun tree-sitter-highlight--highlight (start end)
+(defun tree-sitter-highlight--highlight (wstart start end)
   "Highlight the buffer from START to END with tree-sitter.
 
 This will remove all face properties in that region."
@@ -254,9 +254,8 @@ This will remove all face properties in that region."
   ;;       Already highlighted regions shouldn't be re-highlighted.
   (ts--save-context
     (with-silent-modifications
-      (let ((wstart (window-start))
-             (wend (window-end nil t)))
-       (message "window %s %s" wstart wend)
+      (let ((wend (window-end nil t))
+             (closest-node (ts-get-descendant-for-position-range (ts-root-node tree-sitter-tree) start end)))
       (remove-text-properties (max wstart start) (min end wend) '(face nil))
       (let ((matches (tree-sitter-highlight--get-matches start end)))
         (seq-do #'(lambda (match)
@@ -267,8 +266,11 @@ This will remove all face properties in that region."
                                   (when (or (and (>= start wstart)
                                               (<= start  wend))
                                           (and (>= end wstart)
-                                            (<= end wend)))
-                                    (tree-sitter-highlight--apply x))))
+                                            (<= end wend))
+                                          (and (= start (ts-node-start-position closest-node))
+                                               (= end (ts-node-end-position closest-node)))
+                                          )
+                                    (tree-sitter-highlight--apply x wstart wend))))
                       (cdr match)))
           matches))))))
 
@@ -276,7 +278,7 @@ This will remove all face properties in that region."
   "Highlight the buffer just-in-time, i.e. after the buffer was parsed with tree-sitter."
   (when old-tree
     (seq-do #'(lambda (range)
-                (tree-sitter-highlight--highlight (aref range 0) (aref range 1)))
+                (tree-sitter-highlight--highlight (window-start) (aref range 0) (aref range 1)))
       (ts-changed-ranges old-tree tree-sitter-tree))))
 
 (defun tree-sitter-highlight--highlight-window (_window start)
@@ -292,7 +294,8 @@ there, since the start of the string is further up in the buffer, and the end of
 "
   (if tree-sitter-highlight-force-correct
     (tree-sitter-highlight--highlight (point-min) (point-max))
-   (tree-sitter-highlight--highlight start (window-end nil t))))
+    (let ((node (ts-get-descendant-for-position-range (ts-root-node tree-sitter-tree) start (window-end nil t))))
+      (tree-sitter-highlight--highlight start (ts-node-start-position node) (ts-node-end-position node)))))
 
 (defun tree-sitter-highlight--enable ()
   "Enable `tree-sitter-highlight' in this buffer."
