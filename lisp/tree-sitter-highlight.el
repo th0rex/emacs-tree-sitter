@@ -254,47 +254,30 @@ This will remove all face properties in that region."
   ;;       Already highlighted regions shouldn't be re-highlighted.
   (ts--save-context
     (with-silent-modifications
-      (remove-text-properties start end '(face nil))
+      (let ((wstart (window-start))
+             (wend (window-end nil t)))
+       (message "window %s %s" wstart wend)
+      (remove-text-properties (max wstart start) (min end wend) '(face nil))
       (let ((matches (tree-sitter-highlight--get-matches start end)))
         (seq-do #'(lambda (match)
-                    (seq-do #'tree-sitter-highlight--apply (cdr match)))
-          matches)))))
+                    (seq-do #'(lambda (x)
+                                (let* ((node (cdr x))
+                                        (start (ts-node-start-position node))
+                                        (end (ts-node-end-position node)))
+                                  (when (or (and (>= start wstart)
+                                              (<= start  wend))
+                                          (and (>= end wstart)
+                                            (<= end wend)))
+                                    (tree-sitter-highlight--apply x))))
+                      (cdr match)))
+          matches))))))
 
 (defun tree-sitter-highlight--jit (old-tree)
   "Highlight the buffer just-in-time, i.e. after the buffer was parsed with tree-sitter."
   (when old-tree
-    (let ((changes (ts-changed-ranges old-tree tree-sitter-tree))
-           (wstart (window-start))
-           (wend   (window-end)))
-
-      ;; The old version:
-      ;;
-      ;; Find changes that are within the current window
-      ;; (mapc #'(lambda (range)
-      ;;           (let ((start (aref range 0))
-      ;;                  (end (aref range 1)))
-      ;;             ;; TODO: Improve this
-      ;;             (tree-sitter-highlight--highlight (max wstart start) (min wend end))))
-      ;;   changes))))
-
-      ;; The new version:
-      ;; Should at least never *miss* something, but certainly does "too much" (unneeded) work.
-      ;; Checks if the start or the end of any changed range lies within window-start and window-end.
-      ;; If any does, then highlight the whole visible region.
-      (when (seq-reduce #'(lambda (acc range)
-                            (let ((start (aref range 0))
-                                  (end   (aref range 1)))
-                              (or ;; Any previous range was visible
-                                  acc
-                                  ;; ... or the start is visible
-                                  (and (>= start wstart)
-                                    (<= start wend))
-                                  ;; ... or the end is visible
-                                  (and (>= end wstart)
-                                    (<= end wend)))))
-              changes nil)
-        ;; Highlight the whole visible region.
-        (tree-sitter-highlight--highlight wstart wend)))))
+    (seq-do #'(lambda (range)
+                (tree-sitter-highlight--highlight (aref range 0) (aref range 1)))
+      (ts-changed-ranges old-tree tree-sitter-tree))))
 
 (defun tree-sitter-highlight--highlight-window (_window start)
   "Highlight the _WINDOW after scrolling took place.
